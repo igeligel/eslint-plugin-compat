@@ -1,7 +1,7 @@
 /* eslint no-console: off */
 import path from "path";
 import { mkdirSync, existsSync } from "fs";
-import simpleGit, { SimpleGit } from "simple-git";
+import simpleGit from "simple-git";
 import { ESLint } from "eslint";
 import globals from "globals";
 import compat from "../src/index";
@@ -335,12 +335,7 @@ const repos: Array<RepoInfo> = [
 ];
 
 export async function initRepo(
-  {
-    targetCommitId,
-    targetGitRef,
-    remoteLink,
-    location,
-  }: RepoInfo,
+  { targetCommitId, targetGitRef, remoteLink, location }: RepoInfo,
   showLogs = true
 ) {
   const benchmarksAbsPath = path.join(projectRoot, reposDir);
