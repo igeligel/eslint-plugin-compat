@@ -46,7 +46,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: [path.join("js", "src"), path.join("js", "tests"), "build"],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "bootstrap"),
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -74,8 +75,8 @@ const repos: Array<RepoInfo> = [
     browserslist: ["electron 7.1.13"],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "electron-react-boilerplate"),
-      extensions: [".js", ".jsx", ".ts", ".tsx"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -108,8 +109,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["."],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "handlebars.js"),
-      extensions: [".js"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -133,8 +134,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["src/**/*.js", "test/**/*.js"],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "jquery"),
-      extensions: [".js"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -161,8 +162,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["*.js"],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "preact"),
-      extensions: [".js"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -222,8 +223,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["."],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "create-react-app"),
-      extensions: [".js"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -275,8 +276,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["."],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "aframe"),
-      extensions: [".js"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -307,8 +308,8 @@ const repos: Array<RepoInfo> = [
     filePatterns: ["test", "bundles", "packages", "tools"],
     eslintOptions: {
       cwd: path.join(projectRoot, reposDir, "pixi.js"),
-      extensions: [".js", ".ts"],
-      useEslintrc: false,
+      ignore: false,
+      overrideConfigFile: true,
       // @ts-expect-error Bug?
       baseConfig: [
         compat.configs["flat/recommended"],
@@ -334,7 +335,12 @@ const repos: Array<RepoInfo> = [
 ];
 
 export async function initRepo(
-  { targetCommitId, remoteLink, location }: RepoInfo,
+  {
+    targetCommitId,
+    targetGitRef,
+    remoteLink,
+    location,
+  }: RepoInfo,
   showLogs = true
 ) {
   const benchmarksAbsPath = path.join(projectRoot, reposDir);
@@ -344,16 +350,20 @@ export async function initRepo(
 
   if (showLogs) console.log(`Retrieving ${remoteLink}`);
 
-  const git: SimpleGit = simpleGit();
-  // Clone if necessary, else use existing repo
-  if (!existsSync(path.join(location, ".git"))) {
+  const repoExists = existsSync(path.join(location, ".git"));
+  if (!repoExists) {
     if (showLogs)
       console.log(`${location} not found, proceeding to clone from remote`);
+    const git = simpleGit();
     await git.clone(remoteLink, location);
-    git.init();
   }
-  await git.cwd(location);
-  await git.checkout(targetCommitId);
+
+  const git = simpleGit({ baseDir: location });
+  if (repoExists) {
+    await git.fetch();
+  }
+  const refToCheckout = targetGitRef ?? targetCommitId;
+  await git.checkout(refToCheckout);
 }
 
 export default repos;

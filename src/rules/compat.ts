@@ -9,6 +9,7 @@ import { Rule } from "eslint";
 import findUp from "find-up";
 import fs from "fs";
 import memoize from "lodash.memoize";
+import path from "path";
 import {
   determineTargetsFromConfig,
   lintCallExpression,
@@ -17,6 +18,7 @@ import {
   lintMemberExpression,
   lintNewExpression,
   parseBrowsersListVersion,
+  type RuleMap,
 } from "../helpers"; // will be deprecated and introduced to this file
 import { nodes } from "../providers";
 import {
@@ -91,23 +93,27 @@ const babelConfigs = [
 
 /**
  * Determine if a user has a babel config, which we use to infer if the linted code is polyfilled.
+ * Memoized by directory so multiple files in the same project reuse the result.
  */
-function isUsingTranspiler(context: Context): boolean {
-  const dir = context.filename ?? context.getFilename();
-  const configPath = findUp.sync(babelConfigs, {
-    cwd: dir,
-  });
-  if (configPath) return true;
-  const pkgPath = findUp.sync("package.json", {
-    cwd: dir,
-  });
-  // Check if babel property exists
-  if (pkgPath) {
-    const pkg = JSON.parse(fs.readFileSync(pkgPath).toString());
-    return !!pkg.babel;
-  }
-  return false;
-}
+const isUsingTranspiler = memoize(
+  (filePath: string): boolean => {
+    const dir = path.dirname(filePath);
+    const configPath = findUp.sync(babelConfigs, {
+      cwd: dir,
+    });
+    if (configPath) return true;
+    const pkgPath = findUp.sync("package.json", {
+      cwd: dir,
+    });
+    // Check if babel property exists
+    if (pkgPath) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath).toString());
+      return !!pkg.babel;
+    }
+    return false;
+  },
+  (filePath: string) => path.resolve(path.dirname(filePath))
+);
 
 type RulesFilteredByTargets = {
   CallExpression: AstMetadataApiWithTargetsResolver[];
@@ -178,17 +184,14 @@ export default {
     const browserslistOpts: BrowsersListOpts | undefined =
       context.settings?.browserslistOpts;
 
+    const filename = context.getFilename();
     const lintAllEsApis: boolean =
       context.settings?.lintAllEsApis === true ||
       // Attempt to infer polyfilling of ES APIs from babel config
       (!context.settings?.polyfills?.includes("es:all") &&
-        !isUsingTranspiler(context));
+        !isUsingTranspiler(filename));
     const browserslistTargets = parseBrowsersListVersion(
-      determineTargetsFromConfig(
-        context.getFilename(),
-        browserslistConfig,
-        browserslistOpts
-      )
+      determineTargetsFromConfig(filename, browserslistConfig, browserslistOpts)
     );
 
     // Stringify to support memoization; browserslistConfig is always an array of new objects.
@@ -197,25 +200,76 @@ export default {
       lintAllEsApis
     );
 
+    // Build Maps for O(1) rule lookup instead of O(rules) find() per node (first match wins, like find())
+    const callExpressionRulesMap: RuleMap = new Map();
+    for (const rule of targetedRules.CallExpression) {
+      if (!callExpressionRulesMap.has(rule.object))
+        callExpressionRulesMap.set(rule.object, rule);
+    }
+    const newExpressionRulesMap: RuleMap = new Map();
+    for (const rule of targetedRules.NewExpression) {
+      if (!newExpressionRulesMap.has(rule.object))
+        newExpressionRulesMap.set(rule.object, rule);
+    }
+    const expressionStatementRulesMap: RuleMap = new Map();
+    for (const rule of [
+      ...targetedRules.MemberExpression,
+      ...targetedRules.CallExpression,
+    ]) {
+      if (!expressionStatementRulesMap.has(rule.object))
+        expressionStatementRulesMap.set(rule.object, rule);
+    }
+    const memberExpressionRulesMap: RuleMap = new Map();
+    for (const rule of [
+      ...targetedRules.MemberExpression,
+      ...targetedRules.CallExpression,
+      ...targetedRules.NewExpression,
+    ]) {
+      if (!memberExpressionRulesMap.has(rule.protoChainId))
+        memberExpressionRulesMap.set(rule.protoChainId, rule);
+      const objectPropertyKey = rule.property
+        ? `${rule.object}.${rule.property}`
+        : rule.object;
+      if (!memberExpressionRulesMap.has(objectPropertyKey))
+        memberExpressionRulesMap.set(objectPropertyKey, rule);
+    }
+    const literalRulesMap: RuleMap = new Map();
+    for (const rule of targetedRules.Literal) {
+      for (const syntax of rule.syntaxes ?? []) {
+        if (!literalRulesMap.has(syntax)) literalRulesMap.set(syntax, rule);
+      }
+    }
+
     type Error = {
       message: string;
       node: ESLintNode;
+      name: string;
     };
 
     const errors: Error[] = [];
+    const unsupportedTargetsCache = new Map<string, string[]>();
+    const getUnsupportedCacheKey = (rule: AstMetadataApiWithTargetsResolver) =>
+      rule.caniuseId ? `${rule.id}:caniuse` : `${rule.id}:mdn`;
 
     const handleFailingRule: HandleFailingRule = (
       node: AstMetadataApiWithTargetsResolver,
       eslintNode: ESLintNode
     ) => {
       if (isPolyfilled(context, node)) return;
+      const cacheKey = getUnsupportedCacheKey(node);
+      let unsupported = unsupportedTargetsCache.get(cacheKey);
+      if (unsupported === undefined) {
+        unsupported = node.getUnsupportedTargets(node, browserslistTargets);
+        unsupportedTargetsCache.set(cacheKey, unsupported);
+      }
       errors.push({
         node: eslintNode,
         message: [
           generateErrorName(node),
           "is not supported in",
-          node.getUnsupportedTargets(node, browserslistTargets).join(", "),
+          unsupported.join(", "),
         ].join(" "),
+        name: getName(eslintNode),
       });
     };
 
@@ -226,64 +280,58 @@ export default {
         null,
         context,
         handleFailingRule,
-        targetedRules.CallExpression,
+        callExpressionRulesMap,
         sourceCode
       ),
       NewExpression: lintNewExpression.bind(
         null,
         context,
         handleFailingRule,
-        targetedRules.NewExpression,
+        newExpressionRulesMap,
         sourceCode
       ),
       ExpressionStatement: lintExpressionStatement.bind(
         null,
         context,
         handleFailingRule,
-        [...targetedRules.MemberExpression, ...targetedRules.CallExpression],
+        expressionStatementRulesMap,
         sourceCode
       ),
       MemberExpression: lintMemberExpression.bind(
         null,
         context,
         handleFailingRule,
-        [
-          ...targetedRules.MemberExpression,
-          ...targetedRules.CallExpression,
-          ...targetedRules.NewExpression,
-        ],
+        memberExpressionRulesMap,
         sourceCode
       ),
       Literal: lintLiteral.bind(
         null,
         context,
         handleFailingRule,
-        targetedRules.Literal,
+        literalRulesMap,
         sourceCode
       ),
       // Keep track of all the defined variables. Do not report errors for nodes that are not defined
       Identifier(node: ESLintNode) {
-        if (node.parent) {
-          const { type } = node.parent;
-          if (
-            type === "Property" || // ex. const { Set } = require('immutable');
-            type === "FunctionDeclaration" || // ex. function Set() {}
-            type === "VariableDeclarator" || // ex. const Set = () => {}
-            type === "ClassDeclaration" || // ex. class Set {}
-            type === "ImportDefaultSpecifier" || // ex. import Set from 'set';
-            type === "ImportSpecifier" || // ex. import {Set} from 'set';
-            type === "ImportDeclaration" // ex. import {Set} from 'set';
-          ) {
-            identifiers.add(node.name);
-          }
+        if (!node.parent) return;
+        const { type } = node.parent;
+        if (
+          type === "Property" || // ex. const { Set } = require('immutable');
+          type === "FunctionDeclaration" || // ex. function Set() {}
+          type === "VariableDeclarator" || // ex. const Set = () => {}
+          type === "ClassDeclaration" || // ex. class Set {}
+          type === "ImportDefaultSpecifier" || // ex. import Set from 'set';
+          type === "ImportSpecifier" || // ex. import {Set} from 'set';
+          type === "ImportDeclaration" // ex. import {Set} from 'set';
+        ) {
+          identifiers.add(node.name);
         }
       },
       "Program:exit": () => {
-        // Get a map of all the variables defined in the root scope (not the global scope)
-        // const variablesMap = context.getScope().childScopes.map(e => e.set)[0];
-        errors
-          .filter((error) => !identifiers.has(getName(error.node)))
-          .forEach((node) => context.report(node as Rule.ReportDescriptor));
+        errors.forEach((err) => {
+          if (!identifiers.has(err.name))
+            context.report(err as Rule.ReportDescriptor);
+        });
       },
     };
   },

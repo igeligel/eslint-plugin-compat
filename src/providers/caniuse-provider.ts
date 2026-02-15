@@ -30,21 +30,14 @@ function areVersionsEqual(
 }
 
 /*
- * Check the CanIUse database to see if targets are supported
- *
- * If no record could be found, return true. Rules might not
- * be found because they could belong to another provider
+ * Check the CanIUse stats for a single target (data already looked up).
+ * If no record could be found, return true. Rules might not be found because
+ * they could belong to another provider.
  */
-function isSupportedByCanIUse(
-  node: AstMetadataApiWithTargetsResolver,
+function isSupportedByStats(
+  stats: lite.StatsByAgentID,
   { version, target, parsedVersion }: Target
 ): boolean {
-  if (!node.caniuseId) return false;
-
-  const data = lite.feature(lite.features[node.caniuseId]);
-
-  if (!data) return true;
-  const { stats } = data;
   if (!(target in stats)) return true;
 
   const targetStats = stats[target];
@@ -74,9 +67,18 @@ export function getUnsupportedTargets(
   node: AstMetadataApiWithTargetsResolver,
   targets: Target[]
 ): string[] {
-  return targets
-    .filter((target) => !isSupportedByCanIUse(node, target))
-    .map(formatTargetNames);
+  if (!node.caniuseId) return targets.map(formatTargetNames);
+
+  const data = lite.feature(lite.features[node.caniuseId]);
+  if (!data) return [];
+
+  const { stats } = data;
+  const result: string[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    if (!isSupportedByStats(stats, target)) result.push(formatTargetNames(target));
+  }
+  return result;
 }
 
 const CanIUseProvider: Array<AstMetadataApiWithTargetsResolver> = [

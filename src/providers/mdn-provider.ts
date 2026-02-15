@@ -67,19 +67,16 @@ function customCoerce(version: string): string {
 }
 
 /*
- * Return if MDN supports the API or not
+ * Return if MDN supports the API for a single target (record already looked up).
  */
-export function isSupportedByMDN(
-  node: AstMetadataApiWithTargetsResolver,
-  { version, target: mdnTarget }: Target
+function isSupportedByRecord(
+  record: ApiMetadata,
+  { version, target: mdnTarget }: Target,
+  protoChainId: string
 ): boolean {
   // @ts-expect-error Expected
   const target = reversedTargetMappings[mdnTarget];
-  // If no record could be found, return true. Rules might not
-  // be found because they could belong to another provider
-  if (!mdnRecords.has(node.protoChainId)) return true;
-  const record = mdnRecords.get(node.protoChainId);
-  if (!record || !record.compat.support) return true;
+  if (!record.compat.support) return true;
   const compatRecord = record.compat.support[target as keyof typeof record.compat.support];
   if (!compatRecord) return true;
   if (!Array.isArray(compatRecord) && !("version_added" in compatRecord))
@@ -108,14 +105,14 @@ export function isSupportedByMDN(
   if (!semverCurrent) {
     // eslint-disable-next-line no-console
     console.warn(
-      `eslint-plugin-compat: A non-semver target "${target} ${version}" matched for the feature ${node.protoChainId}, skipping. You're welcome to submit this log to https://github.com/amilajack/eslint-plugin-compat/issues for analysis.`
+      `eslint-plugin-compat: A non-semver target "${target} ${version}" matched for the feature ${protoChainId}, skipping. You're welcome to submit this log to https://github.com/amilajack/eslint-plugin-compat/issues for analysis.`
     );
     return true;
   }
   if (!versionAdded) {
     // eslint-disable-next-line no-console
     console.warn(
-      `eslint-plugin-compat: The feature ${node.protoChainId} is supported since a non-semver target "${target} ${versionAdded}", skipping. You're welcome to submit this log to https://github.com/amilajack/eslint-plugin-compat/issues for analysis.`
+      `eslint-plugin-compat: The feature ${protoChainId} is supported since a non-semver target "${target} ${versionAdded}", skipping. You're welcome to submit this log to https://github.com/amilajack/eslint-plugin-compat/issues for analysis.`
     );
     return true;
   }
@@ -125,6 +122,18 @@ export function isSupportedByMDN(
   return semver.gte(semverCurrent, semverAdded);
 }
 
+/*
+ * Return if MDN supports the API or not
+ */
+export function isSupportedByMDN(
+  node: AstMetadataApiWithTargetsResolver,
+  target: Target
+): boolean {
+  const record = mdnRecords.get(node.protoChainId);
+  if (!record) return true;
+  return isSupportedByRecord(record, target, node.protoChainId);
+}
+
 /**
  * Return an array of all unsupported targets
  */
@@ -132,9 +141,16 @@ export function getUnsupportedTargets(
   node: AstMetadataApiWithTargetsResolver,
   targets: Target[]
 ): string[] {
-  return targets
-    .filter((target) => !isSupportedByMDN(node, target))
-    .map(formatTargetNames);
+  const record = mdnRecords.get(node.protoChainId);
+  if (!record || !record.compat.support) return [];
+
+  const result: string[] = [];
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    if (!isSupportedByRecord(record, target, node.protoChainId))
+      result.push(formatTargetNames(target));
+  }
+  return result;
 }
 
 function getMetadataName(metadata: ApiMetadata) {
