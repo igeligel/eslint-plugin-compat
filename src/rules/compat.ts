@@ -204,6 +204,17 @@ export default {
 
     const errors: Error[] = [];
 
+    // Cache getUnsupportedTargets per rule; targets are fixed for this context.
+    const unsupportedTargetsByRule = new Map<string, string>();
+    const getUnsupportedTargetsMessage = (rule: AstMetadataApiWithTargetsResolver): string => {
+      let message = unsupportedTargetsByRule.get(rule.id);
+      if (message === undefined) {
+        message = rule.getUnsupportedTargets(rule, browserslistTargets).join(", ");
+        unsupportedTargetsByRule.set(rule.id, message);
+      }
+      return message;
+    };
+
     const handleFailingRule: HandleFailingRule = (
       node: AstMetadataApiWithTargetsResolver,
       eslintNode: ESLintNode
@@ -214,7 +225,7 @@ export default {
         message: [
           generateErrorName(node),
           "is not supported in",
-          node.getUnsupportedTargets(node, browserslistTargets).join(", "),
+          getUnsupportedTargetsMessage(node),
         ].join(" "),
       });
     };
